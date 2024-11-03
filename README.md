@@ -18,27 +18,28 @@ Template class ReedSolomon accepts two template arguments: message length and ec
 Simple example: <br>
 ```
 
-    char message[] = "Some very important message ought to be delivered";
-    const int msglen = sizeof(message);
-    const int ecclen = 8;
+    char initialData[] = "There you store information which will be transefered and may need error correcting";
+    const int dataLength = sizeof(message);
+    const int parityLength = sizeof(message);
     
-    char repaired[msglen];
-    char encoded[msglen + ecclen];
+    char repairedData[dataLength];
+    char encodedData[dataLength + parityLength];
 
-    RS::ReedSolomon<msglen, ecclen> rs;
+    RS::ReedSolomon<dataLength, parityLength> coder;
 
-    rs.Encode(message, encoded);
+    coder.Encode(initialData, encodedData);
 
-    // Corrupting first 8 bytes of message (any 4 bytes can be repaired, no more)
-    for(uint i = 0; i < ecclen / 2; i++) 
+    /// Corrupting bytes both of message and parity
+    for(uint i = 0; i < ecclen / 4; i++) 
     {
-        encoded[i] = 'E';
+        encodedData[rand() % dataLength] = 'E';
+        encodedData[rand() % dataLength + rand() % parityLength] = 'E';
     }
 
-    rs.Decode(encoded, repaired);
+    coder.Decode(encodedData, repairedData);
 
-    std::cout << "Original:  " << message  << std::endl;
-    std::cout << "Corrupted: " << encoded  << std::endl;
-    std::cout << "Repaired:  " << repaired << std::endl;
+    std::cout << "Original:  " << initialData  << std::endl;
+    std::cout << "Corrupted: " << encodedData  << std::endl;
+    std::cout << "Repaired:  " << repairedData << std::endl;
 
 ```
