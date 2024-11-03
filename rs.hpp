@@ -26,8 +26,6 @@ namespace RS
     class ReedSolomon
     {
         public:
-            Poly polynoms[MSG_CNT + POLY_CNT]; ///< Local memory of coder
-
             ReedSolomon()
             {
                 const uint8_t   enc_len  = msg_length + ecc_length;
@@ -292,6 +290,7 @@ namespace RS
 
 
             uint8_t* memory; ///< Pointer for polynomials memory on stack
+            Poly polynoms[MSG_CNT + POLY_CNT];
 
             void GeneratorPoly()
             {
