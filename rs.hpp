@@ -13,6 +13,8 @@
 #define assert(dummy)
 #endif
 
+#define RS_DEBUG false
+
 namespace RS
 {
 
@@ -290,7 +292,7 @@ namespace RS
 
 
             uint8_t* memory; ///< Pointer for polynomials memory on stack
-            Poly polynoms[MSG_CNT + POLY_CNT];
+            Poly polynoms[MSG_CNT + POLY_CNT]; ///< Coder local memory
 
             void GeneratorPoly()
             {
