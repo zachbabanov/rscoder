@@ -19,8 +19,8 @@ Simple example: <br>
 ```
 
     char initialData[] = "There you store information which will be transefered and may need error correcting";
-    const int dataLength = sizeof(message);
-    const int parityLength = sizeof(message);
+    const int dataLength = sizeof(initialData);
+    const int parityLength = sizeof(initialData);
     
     char repairedData[dataLength];
     char encodedData[dataLength + parityLength];
