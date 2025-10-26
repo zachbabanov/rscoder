@@ -17,20 +17,20 @@ namespace RS
     {
         Poly() : length(0), _memory(NULL) { }
 
-        Poly(uint8_t id, uint16_t offset, uint8_t size) : length(0), _id(id), _size(size), _offset(offset), _memory(NULL) { }
+        Poly(uint8_t id, uint16_t offset, uint16_t size) : length(0), _id(id), _size(size), _offset(offset), _memory(NULL) { }
 
         /// Append number at the end of polynomial
         /// \param num - number to append
         /// \return false if polynomial can't be stretched
         inline bool Append(uint8_t num)
         {
-            assert(length+1 < _size);
+            assert((uint16_t)(length + 1) <= _size);
             ptr()[length++] = num;
             return true;
         }
 
         /// Polynomial initialization
-        inline void Init(uint8_t id, uint16_t offset, uint8_t size, uint8_t** memory_ptr)
+        inline void Init(uint8_t id, uint16_t offset, uint16_t size, uint8_t** memory_ptr)
         {
             this->_id     = id;
             this->_offset = offset;
@@ -49,14 +49,14 @@ namespace RS
         /// \param src - source byte-sequence
         /// \param len - size of polynomial
         /// \param offset - write offset
-        inline void Set(const uint8_t* src, uint8_t len, uint8_t offset = 0)
+        inline void Set(const uint8_t* src, uint16_t len, uint16_t offset = 0)
         {
-            assert(src && len <= this->_size-offset);
+            assert(src && (uint16_t)len <= (uint16_t)(_size - offset));
             memcpy(ptr()+offset, src, len * sizeof(uint8_t));
-            length = len + offset;
+            length = (uint16_t)(len + offset);
         }
 
-        #define poly_max(a, b) ((a > b) ? (a) : (b))
+#define poly_max(a, b) ((a > b) ? (a) : (b))
 
         inline void Copy(const Poly* src)
         {
@@ -64,7 +64,7 @@ namespace RS
             Set(src->ptr(), length);
         }
 
-        inline uint8_t& at(uint8_t i) const
+        inline uint8_t& at(uint16_t i) const
         {
             assert(i < _size);
             return ptr()[i];
@@ -75,7 +75,7 @@ namespace RS
             return _id;
         }
 
-        inline uint8_t size() const
+        inline uint16_t size() const
         {
             return _size;
         }
@@ -87,14 +87,14 @@ namespace RS
             return (*_memory) + _offset;
         }
 
-        uint8_t length;
+        uint16_t length;
 
-        protected:
+    protected:
 
-            uint8_t   _id;
-            uint8_t   _size;    ///< Size of reserved memory for this polynomial
-            uint16_t  _offset;  ///< Offset in memory
-            uint8_t** _memory;  ///< Pointer to pointer to memory
+        uint8_t   _id;
+        uint16_t  _size;    ///< Size of reserved memory for this polynomial (was uint8_t, now uint16_t)
+        uint16_t  _offset;  ///< Offset in memory
+        uint8_t** _memory;  ///< Pointer to pointer to memory
     };
 }
 
