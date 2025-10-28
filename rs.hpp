@@ -224,7 +224,8 @@ namespace RS
         /**
          * Non-systematic decoding (floating window / cyclic shifts) with decimation attempts.
          * First, try to find a quotient q(x) such that q*g matches received with Hamming distance ≤ t.
-         * If that fails, try decimation heuristics and algebraic reconstruction.
+         * If that fails, try decimations/strict algebraic reconstruction and, importantly,
+         * attempt algebraic correction treating rotated_code as a full codeword polynomial.
          */
         int DecodeNonSystematic(const void* src, void* dst,
                                 uint8_t* erase_pos = NULL, size_t erase_count = 0,
@@ -239,47 +240,54 @@ namespace RS
             const uint8_t *src_ptr = (const uint8_t*) src;
             uint8_t *dst_ptr = (uint8_t*) dst;
 
+            /* allocate memory on stack for polynomials */
             uint8_t stack_memory[MSG_CNT * msg_length + POLY_CNT * ecc_length * 2];
             this->memory = stack_memory;
 
+            /* Pointers to polynomials we will use */
             Poly *gen = &polynoms[ID_GENERATOR];
-            Poly *pPoly = &polynoms[ID_MSG_IN];
-            Poly *quot = &polynoms[ID_MSG_E];
-            Poly *mulres = &polynoms[ID_TPOLY2];
+            Poly *pPoly = &polynoms[ID_MSG_IN];   // general purpose
+            Poly *quot = &polynoms[ID_MSG_E];     // store quotient (candidate message)
+            Poly *mulres = &polynoms[ID_TPOLY2];  // multiplication result buffer
 
-            /* Build generator polynomial (in workspace) */
+            /* Build generator polynomial (placed into polynoms[ID_GENERATOR]) */
             gen->Reset();
             GeneratorPoly();
 
-            /* temporary working arrays (sized to cover n up to 512) */
+            /* local temporary arrays */
             uint8_t rotated_code[512];
             uint8_t reconstructed_code[512];
 
-            const uint8_t t_correct = ecc_length / 2; // correctable symbols
+            uint8_t t_correct = ecc_length / 2; // number of symbol errors allowed
 
-            /* Try every cyclic shift: compute quotient q = floor(p/g), then q*g and compare */
+            // 1) For each cyclic shift compute quotient q and c' = q * g; if Hamming(c', r) <= t -> accept q
             for(uint16_t shift = 0; shift < n; ++shift)
             {
-                for(uint16_t i = 0; i < n; ++i)
+                // rotated_code[i] = src[(i + shift) % n]
+                for(uint8_t i = 0; i < n; ++i)
                     rotated_code[i] = src_ptr[(i + shift) % n];
 
-                pPoly->Set(rotated_code, (uint16_t)n, 0);
+                // set pPoly to rotated_code (polynomial p)
+                pPoly->Set(rotated_code, n, 0);
 
-                /* quotient */
+                // compute quotient (floor division) -> quot
                 PolyDivGetQuotient(pPoly, gen, quot);
 
-                /* multiply q * g */
+                // multiply quotient by generator to get candidate codeword
                 mulres->Reset();
-                gf::poly_mul(quot, gen, mulres);
+                gf::poly_mul(quot, gen, mulres); // mulres now has length = quot.len + gen.len - 1
 
-                /* take first n coefficients */
+                // pad/truncate mulres to length n
                 memset(reconstructed_code, 0, n);
-                for(uint16_t i = 0; i < (uint16_t)mulres->length && i < n; ++i)
-                    reconstructed_code[i] = mulres->at((uint16_t)i);
+                for(uint8_t i = 0; i < (mulres->length && mulres->length <= n ? mulres->length : (mulres->length)); ++i)
+                {
+                    if(i < n) reconstructed_code[i] = mulres->at(i);
+                }
+                // If mulres->length > n, we still only compare first n coefficients (practically shouldn't happen)
 
-                /* Hamming distance */
+                // compute Hamming distance between reconstructed_code and rotated_code
                 uint8_t diff = 0;
-                for(uint16_t i = 0; i < n; ++i)
+                for(uint8_t i = 0; i < n; ++i)
                 {
                     if(reconstructed_code[i] != rotated_code[i])
                     {
@@ -290,14 +298,98 @@ namespace RS
 
                 if(diff <= t_correct)
                 {
-                    uint16_t copy_len = (quot->length < msg_length) ? quot->length : msg_length;
+                    // accept quotient as recovered message (quot->ptr())
+                    uint8_t copy_len = (quot->length < msg_length) ? quot->length : msg_length;
                     memcpy(dst_ptr, quot->ptr(), copy_len);
                     if(copy_len < msg_length) memset(dst_ptr + copy_len, 0, msg_length - copy_len);
                     return 0;
                 }
+
+                // --- NEW: If simple Hamming check fails, try to algebraically correct rotated_code as full codeword ---
+                // This attempts full syndrome-based correction over the whole polynomial of length n.
+                {
+                    Poly *msg_in  = &polynoms[ID_MSG_IN];
+                    Poly *msg_out = &polynoms[ID_MSG_OUT];
+                    Poly *epos    = &polynoms[ID_ERASURES];
+                    Poly *synd    = &polynoms[ID_SYNDROMES];
+                    Poly *forney  = &polynoms[ID_FORNEY];
+                    Poly *errloc  = &polynoms[ID_ERRORS_LOC];
+                    Poly *reloc   = &polynoms[ID_TPOLY3];
+                    Poly *err     = &polynoms[ID_ERRORS];
+
+                    // place rotated_code as a full polynomial of length n (no split msg/ecc)
+                    msg_in->Set(rotated_code, (uint16_t)n, 0);
+                    msg_out->Copy(msg_in);
+
+                    if(erase_pos == NULL) epos->length = 0;
+                    else {
+                        epos->Set(erase_pos, (uint16_t)erase_count);
+                        for(uint16_t i = 0; i < epos->length; i++) msg_in->at(epos->at((uint16_t)i)) = 0;
+                    }
+                    if(epos->length > ecc_length) {
+                        // too many erasures, skip algebraic attempt for this shift
+                    } else {
+                        // compute syndromes treating msg_in as full length-n codeword
+                        CalcSyndromes(msg_in);
+
+                        bool has_errors = false;
+                        for(uint8_t i = 0; i < synd->length; i++) if(synd->at(i) != 0) { has_errors = true; break; }
+
+                        if(!has_errors)
+                        {
+                            // already clean (no errors) -> get quotient directly
+                            msg_out->length = (uint16_t)n;
+                        }
+                        else
+                        {
+                            // attempt to correct
+                            CalcForneySyndromes(synd, epos, n);
+                            FindErrorLocator(forney, NULL, epos->length);
+
+                            reloc->length = errloc->length;
+                            for(int8_t i = errloc->length-1, j = 0; i >= 0; i--, j++)
+                            {
+                                reloc->at((uint16_t)j) = errloc->at((uint16_t)i);
+                            }
+
+                            if(FindErrors(reloc, n))
+                            {
+                                if(err->length != 0)
+                                {
+                                    for(uint8_t i = 0; i < err->length; i++) epos->Append(err->at(i));
+                                    CorrectErrata(synd, epos, msg_in);
+                                }
+                                else
+                                {
+                                    // no error positions found
+                                }
+                            }
+                            else
+                            {
+                                // unable to find error positions for this rotated_code
+                                // continue to next shift
+                                goto skip_algebraic_division;
+                            }
+                        }
+
+                        // now msg_in/msg_out contain corrected full codeword polynomial,
+                        // compute quotient = corrected_code / g(x) to extract original message polynomial
+                        msg_out->length = (uint16_t)n;
+                        // set pPoly to corrected full codeword
+                        pPoly->Copy(msg_out);
+                        PolyDivGetQuotient(pPoly, gen, quot);
+                        // quot now contains candidate message coefficients
+                        uint16_t copy_len = (quot->length < msg_length) ? quot->length : msg_length;
+                        memcpy(dst_ptr, quot->ptr(), copy_len);
+                        if(copy_len < msg_length) memset(dst_ptr + copy_len, 0, msg_length - copy_len);
+                        return 0;
+                    }
+                }
+                skip_algebraic_division: ; // label target for continue
             }
 
-            /* Decimation attempts (try precomputed inverse, strict algebraic, and heuristic sampling) */
+            /* 2) If strict method did not give result, try decimations/heuristics/fallback (unchanged) */
+            // Decimation attempts
             if(decimations && decimations_count)
             {
                 for(size_t di = 0; di < decimations_count; ++di)
@@ -306,44 +398,39 @@ namespace RS
                     if(eta == 0) continue;
                     for(uint16_t sigma = 0; sigma < eta; ++sigma)
                     {
-                        /* try precomputed inverse matrix reconstruction */
                         uint8_t out_c[msg_length];
                         if(ApplyPrecomputedDecimation(src_ptr, (uint8_t)eta, sigma, out_c) == 0)
                         {
                             memcpy(dst_ptr, out_c, msg_length);
                             return 0;
                         }
-
-                        /* try strict algebraic reconstruction */
                         if(DecodeDualBasisDecimation(src_ptr, dst_ptr, (uint8_t)eta, (uint16_t)sigma, 255) == 0)
                         {
                             return 0;
                         }
 
-                        /* heuristic: sample decimated symbols and encode to compare */
+                        // heuristic sampling
                         uint8_t samp[msg_length];
                         for(uint8_t j = 0; j < msg_length; ++j)
-                        {
                             samp[j] = src_ptr[(sigma + (uint32_t)j * eta) % 255];
-                        }
 
+                        // encode candidate and compare to input
                         Poly *msg_out = &polynoms[ID_MSG_OUT];
                         msg_out->Reset();
                         msg_out->Set(samp, msg_length);
-                        msg_out->length = (uint16_t)(msg_length + ecc_length);
-
-                        for(uint16_t i = 0; i < msg_length; i++)
+                        msg_out->length = msg_length + ecc_length;
+                        for(uint8_t i = 0; i < msg_length; i++)
                         {
-                            uint8_t coef = msg_out->at((uint16_t)i);
+                            uint8_t coef = msg_out->at(i);
                             if(coef != 0)
                             {
                                 for(uint16_t j = 1; j < gen->length; j++)
-                                    msg_out->at((uint16_t)(i + j)) ^= gf::mul(gen->at((uint16_t)j), coef);
+                                    msg_out->at(i+j) ^= gf::mul(gen->at(j), coef);
                             }
                         }
-
+                        // compare
                         uint16_t differ = 0;
-                        for(uint16_t k = 0; k < n; ++k)
+                        for(uint8_t k = 0; k < n; ++k)
                         {
                             if(msg_out->ptr()[k] != src_ptr[k]) { if(++differ > ecc_length) break; }
                         }
@@ -356,7 +443,7 @@ namespace RS
                 }
             }
 
-            /* Fallback: floating-window systematic decode on rotated views */
+            // Fallback: try floating-window decode (systematic decode on rotated view)
             {
                 Poly *msg_in  = &polynoms[ID_MSG_IN];
                 Poly *msg_out = &polynoms[ID_MSG_OUT];
@@ -373,7 +460,7 @@ namespace RS
 
                 for(uint16_t shift = 0, tried = 0; shift < n && tried < max_shifts; shift += shift_step, ++tried)
                 {
-                    for(uint16_t i = 0; i < n; ++i)
+                    for(uint8_t i = 0; i < n; ++i)
                         rotated_code[i] = src_ptr[(i + shift) % n];
 
                     msg_in->Set(rotated_code, (uint16_t)msg_length);
@@ -402,8 +489,7 @@ namespace RS
                         FindErrorLocator(forney, NULL, epos->length);
 
                         reloc->length = errloc->length;
-                        for(int16_t i = (int16_t)errloc->length - 1, j = 0; i >= 0; i--, j++)
-                            reloc->at((uint16_t)j) = errloc->at((uint16_t)i);
+                        for(int16_t i = errloc->length-1, j = 0; i >= 0; i--, j++) reloc->at((uint16_t)j) = errloc->at((uint16_t)i);
 
                         if(!FindErrors(reloc, n)) continue;
                         if(err->length == 0) continue;
@@ -415,7 +501,7 @@ namespace RS
                         memcpy(rotated_code, msg_out->ptr(), msg_out->length * sizeof(uint8_t));
                     }
 
-                    /* reconstruct full codeword and rotate back to original orientation */
+                    // reconstruct full code and rotate back
                     msg_out->Reset();
                     msg_out->Set(rotated_code, msg_length);
                     msg_out->length = (uint16_t)(msg_length + ecc_length);
@@ -433,14 +519,15 @@ namespace RS
 
                     pPoly->Set(corrected_code_orig, n, 0);
                     PolyDivGetQuotient(pPoly, gen, quot);
-                    uint16_t copy_len = (quot->length < msg_length) ? quot->length : msg_length;
+                    uint8_t copy_len = (quot->length < msg_length) ? quot->length : msg_length;
                     memcpy(dst_ptr, quot->ptr(), copy_len);
                     if(copy_len < msg_length) memset(dst_ptr + copy_len, 0, msg_length - copy_len);
                     return 0;
                 }
             }
 
-            return 1; /* nothing found */
+            // nothing found
+            return 1;
         }
 
         /**
@@ -458,7 +545,7 @@ namespace RS
             if(eta == 0) return 1;
             if(period == 0) return 1;
 
-            /* precompute e_j = epsilon^{2^j} */
+            /* Precompute e_j = epsilon^{2^j} */
             uint8_t e[256];
             for(uint8_t j = 0; j < m; ++j)
             {
@@ -467,6 +554,7 @@ namespace RS
                 e[j] = gf::pow(2, exp);
             }
 
+            /* Build augmented matrix mat[m][m+1] */
             uint8_t mat[256][257];
             memset(mat, 0, sizeof(mat));
 
@@ -480,7 +568,7 @@ namespace RS
                 mat[r][m] = src_ptr[pos % period];
             }
 
-            /* Gaussian elimination over GF(2^8) */
+            /* Gaussian elimination over GF to RREF */
             for(uint8_t col = 0, row = 0; col < m && row < m; ++col)
             {
                 int pivot = -1;
@@ -887,11 +975,11 @@ namespace RS
             }
             work->length = p->length;
 
-            uint16_t qlen = q->length;
+            uint8_t qlen = q->length;
             int out_len = (int)p->length - (int)qlen + 1;
             if(out_len < 0) out_len = 0;
 
-            dst->length = (uint16_t)out_len;
+            dst->length = (uint8_t)out_len;
 
             for(int i = 0; i < out_len; ++i)
             {
