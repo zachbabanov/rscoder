@@ -3,12 +3,10 @@ project(rscoder)
 
 set(CMAKE_CXX_STANDARD 23)
 
-include_directories("${CMAKE_CURRENT_SOURCE_DIR}/include")
-
 add_library(rscoder INTERFACE)
 
 target_include_directories(rscoder INTERFACE
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
         $<INSTALL_INTERFACE:include>)
 
 find_package(TBB REQUIRED)
