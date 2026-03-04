@@ -23,6 +23,10 @@ namespace rscoder::Encoder {
         }
 
         constexpr void Step() {
+            if (_output == 0) {
+                return;
+            }
+
             const int index = (IndexOf(_output) + _shiftValue) % 255;
             _output = Epsilon[index];
         }
