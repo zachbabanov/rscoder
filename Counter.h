@@ -23,7 +23,7 @@ namespace rscoder {
                 const uint8_t difference = 1 << isValidDecimation->decimationIndex;
 
                 for (int i = 0; i < 8; i++) {
-                    packets.push_back(_packets.at(isValidDecimation->firstPacketIndex + i * difference));
+                    packets.push_back(_packets.at((isValidDecimation->firstPacketIndex + i * difference) % 255));
                 }
 
                 return rscoder::Decode(std::move(packets), isValidDecimation->firstPacketIndex, isValidDecimation->decimationIndex);
@@ -47,7 +47,7 @@ namespace rscoder {
 
             for (uint8_t startIndex : packetsIndexes) {
                 for (uint8_t decimationCount = 0; decimationCount < 9; decimationCount++) {
-                    const uint8_t difference = 1 << decimationCount;
+                    const uint16_t difference = 1 << decimationCount;
                     bool isValidDecimation = true;
 
                     for (uint8_t i = 0; i < 8; ++i) {
